@@ -1,0 +1,13 @@
+[package]
+name = "hypostasis"
+version = "0.1.0"
+edition = "2021"
+
+
+[dependencies]
+anyhow = "1.0.44"
+eframe = "0.14.0" # Gives us egui, epi and web+native backends
+glob = "0.3.0"
+rfd = "0.5.1"
+serde = { version = "1", features = ["derive"], optional = true }
+roead = { git = "https://github.com/NiceneNerd/roead", rev = "5defd192d1069439038fb3442b33fe4faf3e2630" }
