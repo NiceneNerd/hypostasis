@@ -6,6 +6,7 @@ edition = "2021"
 
 [dependencies]
 anyhow = "1.0.44"
+crc = "1.8.1"
 eframe = "0.14.0" # Gives us egui, epi and web+native backends
 glob = "0.3.0"
 rfd = "0.5.1"

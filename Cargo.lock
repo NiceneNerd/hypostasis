@@ -1076,6 +1076,7 @@ name = "hypostasis"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "crc",
  "eframe",
  "glob",
  "rfd",
