@@ -4,13 +4,22 @@ use std::{
 };
 
 use anyhow::{Context, Result};
-use eframe::{egui, egui::Vec2, epi};
+use eframe::{
+    egui,
+    egui::{Id, Vec2},
+    epi,
+};
 use glob::glob;
-use roead::{byml::Byml, yaz0::decompress};
+use roead::{
+    byml::Byml,
+    yaz0::{compress, decompress},
+};
 
 static HASHES: &str = include_str!("../data/hashes.txt");
 
 pub struct App {
+    error: Option<String>,
+    show_error: bool,
     folder: String,
     objects: Vec<String>,
 }
@@ -18,6 +27,8 @@ pub struct App {
 impl Default for App {
     fn default() -> Self {
         Self {
+            error: None,
+            show_error: false,
             folder: String::new(),
             objects: vec![],
         }
@@ -39,8 +50,12 @@ impl epi::App for App {
     }
 
     fn update(&mut self, ctx: &egui::CtxRef, _frame: &mut epi::Frame<'_>) {
-        let Self { folder, objects } = self;
-        let mut tasks: Vec<&dyn Fn(&mut Self) -> Result<()>> = vec![];
+        let Self {
+            folder,
+            error,
+            show_error,
+            objects,
+        } = self;
 
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.spacing_mut().item_spacing = Vec2 { x: 0.0, y: 8.0 };
@@ -52,96 +67,108 @@ impl epi::App for App {
                 }
             }
             if objects.len() > 0 {
+                ui.label("HashIDs replaced:");
                 ui.add(egui::Label::new(objects.join("\n")).code());
             }
             if ui.button("Process").clicked() {
-                tasks.push(&Self::process_maps)
+                match process_maps(&*folder) {
+                    Ok(objs) => *objects = objs,
+                    Err(e) => {
+                        *show_error = true;
+                        *error = Some(e.to_string());
+                    }
+                }
             }
         });
-        for task in tasks {
-            match task(self) {
-                Ok(_) => (),
-                Err(e) => {
-                    let mut open = true;
-                    egui::Window::new("Error").show(ctx, |ui| {
-                        ui.label(&e.to_string());
-                        if ui.button("OK").clicked() {
-                            open = false;
-                        }
-                    });
+        let mut show = *show_error;
+        if *show_error {
+            egui::Window::new("Error").open(show_error).show(ctx, |ui| {
+                ui.label(error.as_ref().unwrap());
+                if ui.button("OK").clicked() {
+                    show = false;
                 }
+            });
+            if !show {
+                *show_error = false;
+                *error = None;
             }
         }
     }
 }
 
-impl App {
-    fn process_maps(&mut self) -> Result<()> {
-        let hashes: HashSet<u32> = HASHES
-            .split(',')
-            .map(|s| u32::from_str_radix(s, 10).unwrap())
-            .collect();
-        let remaps: HashMap<u32, u32> = glob(
-            Path::new(&self.folder)
-                .join("**/MainField/**/?-?_*.smubin")
-                .to_str()
-                .context("Bad glob")?,
-        )?
-        .filter_map(|f| f.ok())
-        .flat_map(process_map_file)
+fn process_maps(folder: &String) -> Result<Vec<String>> {
+    let hashes: HashSet<u32> = HASHES
+        .split(',')
+        .map(|s| u32::from_str_radix(s, 10).unwrap())
         .collect();
-        self.objects = remaps
-            .iter()
-            .map(|(o, r)| format!("0x{:02x} => 0x{:02x}", o, r))
-            .collect();
-        Ok(())
-    }
-}
-
-fn process_map_file(file: PathBuf) -> Result<impl Iterator<Item = (u32, u32)>> {
-    let mut data =
-        Byml::from_binary(&decompress(std::fs::read(&file).unwrap()).unwrap()).unwrap();
-    let unit_remaps: HashMap<u32, u32> = data["Objs"]
-        .as_array()
-        .unwrap()
+    let files: Vec<PathBuf> = glob(
+        Path::new(folder)
+            .join("**/MainField/**/?-?_*.smubin")
+            .to_str()
+            .context("Bad glob")?,
+    )?
+    .filter_map(|f| f.ok())
+    .collect();
+    let remaps: HashMap<u32, u32> = files
         .iter()
-        .filter_map(|obj| {
-            let actor = obj.as_hash().unwrap();
-            if let Ok(id) = actor["HashId"].as_uint() {
-                if !hashes.contains(&id) {
-                    println!("{}", obj.to_text());
-                    let new_id = crc::crc32::checksum_ieee(obj.to_text().as_bytes());
-                    Some((id, new_id))
-                } else {
-                    None
-                }
+        .map(|file| {
+            let bytes = decompress(std::fs::read(&file)?)?;
+            let mut data = Byml::from_binary(&bytes)?;
+            let endian = if &bytes[0..2] == b"BY" {
+                roead::Endian::Big
             } else {
-                None
-            }
-        })
-        .collect();
-    data["Objs"]
-        .as_mut_array()
-        .unwrap()
-        .iter_mut()
-        .filter(|obj| obj.as_hash().unwrap().contains_key("LinksToObj"))
-        .for_each(|obj| {
-            for link in obj
-                .as_mut_hash()
-                .unwrap()
-                .get_mut("LinksToObj")
-                .unwrap()
+                roead::Endian::Little
+            };
+            drop(bytes);
+            std::fs::rename(&file, file.with_extension("bak"))?;
+            let unit_remaps: HashMap<u32, u32> = data["Objs"]
+                .as_array()?
+                .iter()
+                .filter_map(|obj| {
+                    let actor = obj.as_hash().unwrap();
+                    if let Ok(id) = actor["HashId"].as_uint() {
+                        if !hashes.contains(&id) {
+                            let new_id = crc::crc32::checksum_ieee(obj.to_text().as_bytes());
+                            Some((id, new_id))
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            data["Objs"]
                 .as_mut_array()
                 .unwrap()
-            {
-                if let Some(replace) = unit_remaps
-                    .get(&link.as_hash().unwrap()["DestUnitHashId"].as_uint().unwrap())
-                {
-                    link.as_mut_hash()
+                .iter_mut()
+                .filter(|obj| obj.as_hash().unwrap().contains_key("LinksToObj"))
+                .try_for_each(|obj| -> Result<()> {
+                    for link in obj
+                        .as_mut_hash()?
+                        .get_mut("LinksToObj")
                         .unwrap()
-                        .insert("DestUnitHashId".to_owned(), Byml::UInt(*replace));
-                }
-            }
-        });
-    Ok(unit_remaps.into_iter())
+                        .as_mut_array()?
+                    {
+                        if let Some(replace) =
+                            unit_remaps.get(&link.as_hash()?["DestUnitHashId"].as_uint()?)
+                        {
+                            link.as_mut_hash()
+                                .unwrap()
+                                .insert("DestUnitHashId".to_owned(), Byml::UInt(*replace));
+                        }
+                    }
+                    Ok(())
+                })?;
+            std::fs::write(&file, compress(data.to_binary(endian)))?;
+            Ok(unit_remaps)
+        })
+        .collect::<Result<Vec<HashMap<u32, u32>>>>()?
+        .into_iter()
+        .flatten()
+        .collect();
+    Ok(remaps
+        .iter()
+        .map(|(o, r)| format!("0x{:02x} => 0x{:02x}", o, r))
+        .collect())
 }
