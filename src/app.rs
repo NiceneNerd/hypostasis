@@ -6,7 +6,7 @@ use std::{
 use anyhow::{Context, Result};
 use eframe::{
     egui,
-    egui::{Id, Vec2},
+    egui::Vec2,
     epi,
 };
 use glob::glob;
@@ -66,10 +66,6 @@ impl epi::App for App {
                     *folder = picked.to_str().unwrap().to_owned()
                 }
             }
-            if objects.len() > 0 {
-                ui.label("HashIDs replaced:");
-                ui.add(egui::Label::new(objects.join("\n")).code());
-            }
             if ui.button("Process").clicked() {
                 match process_maps(&*folder) {
                     Ok(objs) => *objects = objs,
@@ -78,6 +74,12 @@ impl epi::App for App {
                         *error = Some(e.to_string());
                     }
                 }
+            }
+            if objects.len() > 0 {
+                ui.label("HashIDs replaced:");
+                egui::ScrollArea::auto_sized().show(ui, |ui| {
+                    ui.add(egui::Label::new(objects.join("\n")).code());
+                });
             }
         });
         let mut show = *show_error;
