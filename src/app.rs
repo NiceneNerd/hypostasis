@@ -1,14 +1,11 @@
 use std::{
     collections::{HashMap, HashSet},
     path::{Path, PathBuf},
+    sync::mpsc::{channel, Receiver, Sender},
 };
 
 use anyhow::{Context, Result};
-use eframe::{
-    egui,
-    egui::Vec2,
-    epi,
-};
+use eframe::{egui, egui::Vec2, epi};
 use glob::glob;
 use roead::{
     byml::Byml,
@@ -20,17 +17,24 @@ static HASHES: &str = include_str!("../data/hashes.txt");
 pub struct App {
     error: Option<String>,
     show_error: bool,
+    show_busy: bool,
     folder: String,
     objects: Vec<String>,
+    send: Sender<Result<Vec<String>>>,
+    recv: Receiver<Result<Vec<String>>>,
 }
 
 impl Default for App {
     fn default() -> Self {
+        let (send, recv) = channel();
         Self {
             error: None,
             show_error: false,
+            show_busy: false,
             folder: String::new(),
             objects: vec![],
+            send,
+            recv,
         }
     }
 }
@@ -54,7 +58,10 @@ impl epi::App for App {
             folder,
             error,
             show_error,
+            show_busy,
             objects,
+            send,
+            recv,
         } = self;
 
         egui::CentralPanel::default().show(ctx, |ui| {
@@ -67,12 +74,30 @@ impl epi::App for App {
                 }
             }
             if ui.button("Process").clicked() {
-                match process_maps(&*folder) {
+                *show_busy = true;
+                let folderc = folder.clone();
+                let send = send.clone();
+                std::thread::spawn(move || {
+                    send.send(process_maps(&folderc)).unwrap();
+                });
+            }
+            if let Ok(res) = recv.try_recv() {
+                *show_busy = false;
+                match res {
                     Ok(objs) => *objects = objs,
                     Err(e) => {
                         *show_error = true;
                         *error = Some(e.to_string());
                     }
+                }
+            } else {
+                if *show_busy {
+                    egui::Window::new("Plz Wait")
+                        .default_width(200.0)
+                        .show(ctx, |ui| {
+                            ui.label("Processing maps...");
+                            ui.add(egui::widgets::ProgressBar::new(0.99).animate(true));
+                        });
                 }
             }
             if objects.len() > 0 {
